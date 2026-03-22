@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { doc, getDoc } from "firebase/firestore";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { doc, getDoc, onSnapshot } from "firebase/firestore";
 import { db } from "../lib/firebase.ts";
 import type {
   Playlist,
@@ -24,12 +24,84 @@ interface UsePlaylistReturn {
   loading: boolean;
 }
 
+async function resolveItems(
+  items: PlaylistItem[]
+): Promise<ResolvedPlaylistItem[]> {
+  return Promise.all(
+    items
+      .sort((a, b) => a.order - b.order)
+      .map(async (item): Promise<ResolvedPlaylistItem> => {
+        if (item.type === "media" && item.mediaId) {
+          try {
+            const mediaSnap = await getDoc(doc(db, "media", item.mediaId));
+            if (mediaSnap.exists()) {
+              const media = mediaSnap.data() as Media;
+              return {
+                ...item,
+                mediaUrl: media.downloadUrl,
+                mediaThumbnail: media.thumbnailUrl,
+                mediaType: media.type,
+                mimeType: media.mimeType,
+              };
+            }
+          } catch (err) {
+            console.error(`Failed to resolve media ${item.mediaId}:`, err);
+          }
+        }
+
+        if (item.type === "template" && item.templateId) {
+          try {
+            const templateSnap = await getDoc(
+              doc(db, "templates", item.templateId)
+            );
+            if (templateSnap.exists()) {
+              const template = templateSnap.data() as Template;
+              return {
+                ...item,
+                templateZones: template.zones,
+                templateName: template.name,
+              };
+            }
+          } catch (err) {
+            console.error(
+              `Failed to resolve template ${item.templateId}:`,
+              err
+            );
+          }
+        }
+
+        return { ...item };
+      })
+  );
+}
+
 export function usePlaylist(playlistId: string | null): UsePlaylistReturn {
   const [playlist, setPlaylist] = useState<Playlist | null>(null);
   const [resolvedItems, setResolvedItems] = useState<ResolvedPlaylistItem[]>(
     []
   );
   const [loading, setLoading] = useState(true);
+  const resolvingRef = useRef(0);
+
+  const resolveAndSet = useCallback(
+    async (playlistData: Playlist) => {
+      const version = ++resolvingRef.current;
+      try {
+        const resolved = await resolveItems(playlistData.items || []);
+        // Only update if this is still the latest resolve call
+        if (version === resolvingRef.current) {
+          setResolvedItems(resolved);
+          setLoading(false);
+        }
+      } catch (err) {
+        console.error("Failed to resolve playlist items:", err);
+        if (version === resolvingRef.current) {
+          setLoading(false);
+        }
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (!playlistId) {
@@ -39,15 +111,15 @@ export function usePlaylist(playlistId: string | null): UsePlaylistReturn {
       return;
     }
 
-    let cancelled = false;
+    setLoading(true);
+    const playlistRef = doc(db, "playlists", playlistId);
 
-    async function fetchPlaylist() {
-      setLoading(true);
-      try {
-        const playlistRef = doc(db, "playlists", playlistId!);
-        const playlistSnap = await getDoc(playlistRef);
-
-        if (!playlistSnap.exists() || cancelled) {
+    // Real-time listener — fires immediately with current data,
+    // then again whenever the playlist document changes
+    const unsubscribe = onSnapshot(
+      playlistRef,
+      async (snapshot) => {
+        if (!snapshot.exists()) {
           setPlaylist(null);
           setResolvedItems([]);
           setLoading(false);
@@ -55,79 +127,21 @@ export function usePlaylist(playlistId: string | null): UsePlaylistReturn {
         }
 
         const playlistData = {
-          id: playlistSnap.id,
-          ...playlistSnap.data(),
+          id: snapshot.id,
+          ...snapshot.data(),
         } as Playlist;
+
         setPlaylist(playlistData);
-
-        // Resolve each item's media/template URLs
-        const resolved = await Promise.all(
-          playlistData.items
-            .sort((a, b) => a.order - b.order)
-            .map(async (item): Promise<ResolvedPlaylistItem> => {
-              if (item.type === "media" && item.mediaId) {
-                try {
-                  const mediaRef = doc(db, "media", item.mediaId);
-                  const mediaSnap = await getDoc(mediaRef);
-                  if (mediaSnap.exists()) {
-                    const media = mediaSnap.data() as Media;
-                    return {
-                      ...item,
-                      mediaUrl: media.downloadUrl,
-                      mediaThumbnail: media.thumbnailUrl,
-                      mediaType: media.type,
-                      mimeType: media.mimeType,
-                    };
-                  }
-                } catch (err) {
-                  console.error(
-                    `Failed to resolve media ${item.mediaId}:`,
-                    err
-                  );
-                }
-              }
-
-              if (item.type === "template" && item.templateId) {
-                try {
-                  const templateRef = doc(db, "templates", item.templateId);
-                  const templateSnap = await getDoc(templateRef);
-                  if (templateSnap.exists()) {
-                    const template = templateSnap.data() as Template;
-                    return {
-                      ...item,
-                      templateZones: template.zones,
-                      templateName: template.name,
-                    };
-                  }
-                } catch (err) {
-                  console.error(
-                    `Failed to resolve template ${item.templateId}:`,
-                    err
-                  );
-                }
-              }
-
-              return { ...item };
-            })
-        );
-
-        if (!cancelled) {
-          setResolvedItems(resolved);
-        }
-      } catch (err) {
-        console.error("Failed to fetch playlist:", err);
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        await resolveAndSet(playlistData);
+      },
+      (error) => {
+        console.error("Playlist listener error:", error);
+        setLoading(false);
       }
-    }
+    );
 
-    fetchPlaylist();
-    return () => {
-      cancelled = true;
-    };
-  }, [playlistId]);
+    return () => unsubscribe();
+  }, [playlistId, resolveAndSet]);
 
   return { playlist, resolvedItems, loading };
 }

@@ -48,6 +48,13 @@ export function PlayerEngine({ screen }: PlayerEngineProps) {
     setCurrentIndex(0);
   }, [playlistId, playlistVersion]);
 
+  // Clamp index if items were removed and current index is out of bounds
+  useEffect(() => {
+    if (resolvedItems.length > 0 && currentIndex >= resolvedItems.length) {
+      setCurrentIndex(0);
+    }
+  }, [resolvedItems, currentIndex]);
+
   // Cycle through items based on duration
   useEffect(() => {
     if (resolvedItems.length === 0) return;
