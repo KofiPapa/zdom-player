@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../lib/firebase.ts";
+import { getAndroidBridge } from "../hooks/usePlayerAuth.ts";
 
 interface PairingScreenProps {
   onPaired: (screenId: string, token: string) => void;
@@ -91,16 +92,31 @@ export function PairingScreen({ onPaired }: PairingScreenProps) {
         PairScreenResponse
       >(functions, "pairScreen");
 
+      // Gather device info — use Android bridge if available for richer data
+      const bridge = getAndroidBridge();
+      let deviceInfo: Record<string, string> = {
+        userAgent: navigator.userAgent,
+        platform: navigator.platform,
+        language: navigator.language,
+        screenWidth: String(window.screen.width),
+        screenHeight: String(window.screen.height),
+        pairedAt: new Date().toISOString(),
+      };
+
+      if (bridge) {
+        try {
+          const nativeInfo = JSON.parse(bridge.getDeviceInfo());
+          deviceInfo = { ...deviceInfo, ...nativeInfo, source: "android-app" };
+        } catch {
+          deviceInfo.source = "android-app";
+        }
+      } else {
+        deviceInfo.source = "web-browser";
+      }
+
       const result = await pairScreen({
         code,
-        deviceInfo: {
-          userAgent: navigator.userAgent,
-          platform: navigator.platform,
-          language: navigator.language,
-          screenWidth: String(window.screen.width),
-          screenHeight: String(window.screen.height),
-          pairedAt: new Date().toISOString(),
-        },
+        deviceInfo,
       });
 
       const { screenId, customToken } = result.data;
