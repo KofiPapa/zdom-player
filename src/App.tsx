@@ -71,8 +71,12 @@ function App() {
   // No screen data found
   if (!screen) {
     return (
-      <div className="flex items-center justify-center w-screen h-screen bg-black">
-        <p className="text-gray-500 text-2xl">Screen not found</p>
+      <div className="flex flex-col items-center justify-center w-screen h-screen bg-surface">
+        <div className="w-14 h-14 bg-gradient-to-br from-primary to-primary-dark rounded-xl flex items-center justify-center mb-6 shadow-lg shadow-primary/20">
+          <span className="text-white text-xl font-bold">Z</span>
+        </div>
+        <p className="text-gray-400 text-xl mb-2">Screen Not Found</p>
+        <p className="text-gray-600 text-sm">This screen may have been removed from the dashboard.</p>
       </div>
     );
   }
